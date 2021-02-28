@@ -1,0 +1,335 @@
+---
+title: "Project-STAT5825"
+author: "Wenxiao Zhou"
+date: "12/6/2020"
+output: word_document
+---
+**Project Codes**
+
+This document contains two parts: "Data Analysis Part" and "Appendix Part":  
+
+**Data Analysis Part**
+**Introduction**
+In reality, many time series exhibit complex seasonal patterns. Yet, most existing time series models are designed to accommodate simple seasonal patterns with a small integer-valued period. Basing on the paper of discussing methods of forecasting time series with complex seasonal patterns, we want to predict a time series with multiple seasonal patterns with different methods and compare their forecast accuracy. 
+
+**Data description and preparation**
+Here, we focus on predict the hourly energy consumption time series from PJM interconnection LLC--"DUQ.csv". This time series selects the energy consumption from Duquesne Light Company, which generates electricity primarily in area around city of Pittsburgh, Pennsylvania.
+
+```{r}
+#Packages preparation
+library(lubridate)
+library(ggplot2)
+library(forecast)
+library(IRdisplay)
+library(gridExtra)
+library(grid)
+library(lattice)
+```
+
+
+The data are collected hourly, which usually has two types of seasonality: a daily pattern, a weekly pattern.
+In order to keep data on a successive timeline, we select data contains complete power consumption hourly through 2005Jan to 2018Aug.2nd.
+
+```{r}
+setwd("/Users/zhouwenxiao/Desktop/Project")
+data<-read.csv("Grad_Wenxiao-Zhou-Data.csv",stringsAsFactors=F)
+data$Datetime<-as.POSIXct(data$Datetime,format='%Y/%m/%d %H:%M')
+#display the structure of the data
+str(data)
+head(data)
+data<-na.omit(data)
+```
+
+First, visualize the time series from year 2005 to 2018 to get an intuitive judge of the trend pattern and seasonal pattern:
+
+```{r}
+ggplot(data = data, aes(x = Datetime, y =DUQ_MW))+
+  geom_line(color = "#00BFFF", size = 0.5) + ggtitle('Duquesne Light Company Energy Consumptions')+
+  xlab('Year') + ylab('Consumption in Megawatts')
+```
+
+In order to visualize more details in seasonal pattern, we choose time series only from Year 2010:
+
+```{r}
+#par(mfrow=c(3,1))
+#detect the monthly effect
+plot1<-ggplot(data=data[data$Datetime>='2010-01-01'&data$Datetime<='2010-12-31',],
+       aes(x=Datetime,y=DUQ_MW))+
+  geom_line(color="#00BFFF",size=0.5)+ggtitle('Duquesne Light Company Energy Consumptions in 2010')+
+  xlab('Date')+ylab('Consumption in Megawatts')
+#detect the weekly effect
+#2010-01-11 Monday, 2010-01-17 Sunday
+plot2<-ggplot(data=data[data$Datetime>='2010-01-11'&data$Datetime<='2010-01-17',],
+       aes(x=Datetime,y=DUQ_MW))+
+  geom_line(color="#00BFFF",size=0.5)+ggtitle('Duquesne Light Company Energy Consumptions in one week')+
+  xlab('Date')+ylab('Consumption in Megawatts')
+#detect the hourly effect
+D<-data[data$Datetime>='2010-01-11'&data$Datetime<='2010-01-17 23:00:00',]
+MD<-ts(D$DUQ_MW,frequency=24)
+plot3<-ggseasonplot(MD, year.labels=TRUE) +
+  ylab("$energy consumption") +
+  ggtitle("Polar hourly plot: Energy consumption in one day")
+
+grid.arrange(plot1, plot2, plot3, nrow=3)
+```
+
+There is an increasing trend of energy consumption from May to August and similar trend from November to January in the next year. We can consider it as people using electricity for cooling and heating respectively that cause these two trends.
+
+
+```{r}
+#restrict the data from 2012 to 2018
+data1<-data[data$Datetime>='2012-08-01 00:00:00' & data$Datetime<='2018-07-31 00:00:00',]
+data1$Datetime<-ymd_hms(data1$Datetime)
+ts<-data1$DUQ_MW %>% ts(freq=24) #since each row representing a data within hourly interval
+ts %>% tail(24*7*4) %>% 
+  decompose()  %>%
+  autoplot()
+```
+
+Here, consider three period are considered as daily, weekly and yearly:$24,24\cdot 7,24\cdot 365.25$. 
+
+**Structural Decomposition--MSTL Model**
+The first direct method being discussed for a time series is the decomposing the data into trend, seasonal and irregular components. From the decomposition plot, we find trend still with a seasonal trend. Thus, multi-seasonal component is necessary to be considered.
+
+Use MSTL model to training data: Separate the time series as two parts: train and test
+```{r}
+train<-data1[data1$Datetime<='2018-06-30',]
+test<-data1[data1$Datetime>='2018-07-01',]
+MSTS<-msts(train$DUQ_MW,seasonal.periods=c(24,24*7,24*365.25),start=decimal_date(as.POSIXct(("2012-08-01 00:00:00"))))
+#decompose data using mstl
+MSTS %>% mstl() %>% autoplot()+
+  ggtitle("MSTL decomposition of time series")
+```
+
+Now, a much clearer decomposition of the time series is shown with a decreasing trend on the second panel. The third, fourth and fifth panel are respectively daily, weekly and yearly seasonality.
+Then, we forecast for our test data by MSTL model:
+```{r}
+forMSTS<-MSTS %>% stlf() %>% forecast(h=24*7*5)
+summary(forMSTS)
+autoplot(forMSTS)+ggtitle('MSTL forecast')+xlab('Year')+ylab('Consumption in MW')
+```
+
+Check the forecast accuracy for MSTL model:
+```{r}
+accuracy(forMSTS,test$DUQ_MW)
+```
+
+
+
+**ARIMA Model**
+
+According to Rob J Hyndman with his book "Forecasting: principles and practice" which introduce a method called Dynamic harmonic regression is suitable for long seasonal period data, which is adequate for our energy consumption time series with daily, weekly and yearly seasonal periods.
+Here, we use Fourier analysis to predict the incorporate the multiple seasonal periods with different frequency, the number of Fourier pairs are controlled by K. Similar to the procedures of ARIMA model with regression, an ARMA error will be included in the model at last.
+
+First, detect the rule of trend and seasonal components by plotting time series plot with ACF and PACF:
+```{r}
+library(astsa)
+library(tidyverse)
+library(fpp2)
+
+#capture a subset of time series from training sample
+energy15<-window(MSTS,start=2017)
+#Since this data is weekly, hourly collected orderly, we take a seasonal difference for frequency 24*7, 24 to make time series stationary
+diff1<-diff(energy15,24*7)
+diff2<-diff(diff1,24)
+par(mfrow=c(2,1))
+ts.plot(energy15,main="Original time series ",col="#1E90FF",xlab="Time",ylab="energy consumption")
+ts.plot(diff2,main="Differenced time series ",col="#00BFFF",xlab="Time",ylab="energy consumption")
+acf(diff2,24*31)
+pacf(diff2,24*31)
+```
+
+From the ACF and PACF plot, we still hard to detect an adequate ARIMA model to this differenced time series, since this data is yearly collected, may still with a long-term seasonal trend. For this complex time series with multiple seasonal trends, we choose to use a dynamic harmonic regression model. Then, the seasonal pattern is modeled using Fourier terms with short-term time series dynamics handled by an ARMA error.
+
+```{r}
+#determine K
+for (i in seq(7)) {
+  #find The K( number of Fourier sin and cos pairs with minimal AICc)
+  fit<-auto.arima(energy15,lambda=0,seasonal=FALSE,xreg=fourier(energy15,K=c(i,i,i)))
+  fit$aicc
+  print(paste("K=",i,"AICC=",round(fit[["aicc"]],2)))
+}
+```
+For the general model, if we suppose three seasonal periods with same number of harmonics, K=6 is suitable with minimal AICc, however, further detection of the significance of harmonics still is needed. 
+
+```{r}
+fitt<-lm(energy15~fourier(energy15,K=c(6,6,6)))
+summary(fitt)
+#select harmonic numbers for three seasonal components: S=24 with K=1,2 significant; S=24*7 with K=1,2 significant; S=24*7*365.25 with K=1,2,3,4,5,6 significant
+#now use xreg=fourier(energy15,K=c(2,6,6)) instead
+fittnew<-lm(energy15~fourier(energy15,K=c(2,6,6)))
+res<-resid(fittnew)
+ress<-diff(res)
+par(mfrow=c(2,1))
+acf(ress,main="ACF of Regression Residuals")
+pacf(ress,main="PACF of Regression Residuals")
+#there is a cut off after lag 2 on PACF plot, ACF with a exponential decay but with a seasonal effect
+
+#R<-auto.arima(res,ic='bic',seasonal=TRUE)
+fit1<-auto.arima(energy15,seasonal=FALSE,xreg=fourier(energy15,K=c(2,6,6)))
+summary(fit1)
+```
+
+The final fitted model is shown below:
+```{r}
+for1<-forecast(fit1,xreg=fourier(energy15,K=c(2,6,6),h=24*31))
+autoplot(for1,include=24*31)+ylab("Power Consumption predicted")+xlab("Time")
+```
+
+What's more, we check the residuals of the model: Although we find the suitable harmonics numbers for seasonal components, and consider an ARMA model to serially correlated errors basing on auto.arima function, the residuals under this model are still autocorrelated. This model is not good.
+
+```{r}
+checkresiduals(fit1)
+ress<-fit1$residuals
+Box.test(ress, lag=100,type="Ljung")
+```
+
+Check the forecast accuracy for Dynamic harmonic regression model:
+```{r}
+accuracy(for1,test$DUQ_MW)
+```
+
+**BATS & TBATS Models**
+
+At last, we will make comparison between two models from my paper: "**Forecasting time series with complex seasonal patterns using exponential smoothing**", they are respectively BATS and TBATS models.
+
+First, we use BATS model:
+BATS model cannot handle non-integer periods, and may be over-parameterized, these problems can be solved using trigonometric formulation.
+
+A TBATS model differs from dynamic harmonic regression in that the seasonality is allowed to change slowly over time in a TBATS model, while harmonic regression terms force the seasonal patterns to repeat periodically without changing. One drawback of TBATS models, however, is that they can be slow to estimate, especially with long time series. Hence, we will consider a subset of the data
+
+```{r}
+fit2<-tbats(energy15)
+for2<-forecast(fit2,h=24*31)
+#to see a clear decomposition of TBATS model, draw the plot
+#The time series is too long to show a clear seasonal sequence
+plot(fit2)
+par(mfrow=c(1,1))
+autoplot(for2,include=24*31)+ylab("Energy Consumption")+xlab("Hour")+ggtitle('TBATS forecast of energy consumption for 2017-2018')
+```
+
+```{r}
+A2<-accuracy(for2,test$DUQ_MW)
+A2
+```
+
+
+**Forecast Prediction**
+
+The above sections have already presented the forecast plots for MSTL, Dynamic harmonic regression, TBATS model with accuracy detections. We summary the results again:
+
+```{r}
+#MSTL
+autoplot(forMSTS)+ggtitle('MSTL forecast')+xlab('Year')+ylab('Consumption in MW')
+accuracy(forMSTS,test$DUQ_MW)
+```
+
+```{r}
+#Dynamic Harmonic regression
+autoplot(for1,include=24*31)+ylab("Power Consumption predicted")+xlab("Time")
+accuracy(for1,test$DUQ_MW)
+```
+
+```{r}
+#TBATS model
+autoplot(for2,include=24*31)+ylab("Energy Consumption")+xlab("Hour")+ggtitle('TBATS forecast of energy consumption')
+A2<-accuracy(for2,test$DUQ_MW)
+A2
+```
+
+
+Take a small subset of the train data, and compare BATS model with TBATS model. Since the data is within one year, we delete the yearly seasonal pattern, and only keep daily and weekly patterns:
+
+```{r}
+options(warn=-1)
+#capture a subset of time series from training sample
+energy18<-window(MSTS,start=2018)
+#BATS model
+fit3<-bats(energy18)
+for3<-forecast(fit3,h=24*31)
+#decomposition of TBATS model
+plot(fit3)
+par(mfrow=c(1,1))
+autoplot(for3,include=24*31)+ylab("Energy Consumption")+xlab("Hour")+ggtitle('BATS forecast of energy consumption for 2018')
+options(warn=0)
+```
+
+```{r}
+#TBATS model
+fit4<-tbats(energy18)
+for4<-forecast(fit4,h=24*31)
+#decomposition of TBATS model
+plot(fit4)
+par(mfrow=c(1,1))
+autoplot(for4,include=24*31)+ylab("Energy Consumption")+xlab("Hour")+ggtitle('TBATS forecast of energy consumption for 2018')
+```
+
+Comparing the forecast accuracy between two models:
+
+```{r}
+A_bats<-accuracy(for3,test$DUQ_MW)
+A_bats
+A_tbats<-accuracy(for4,test$DUQ_MW)
+A_tbats
+```
+
+
+
+
+**Appendix Part:**
+
+*Figure 3.1*
+
+Figure 3.1: Decomposition with one seasonal pattern freq=24
+```{r}
+ts %>% tail(24*7*4) %>% 
+  decompose()  %>%
+  autoplot()
+```
+
+*R output-1*
+
+R output to show the results of the fitted dynamic harmonic regression model:
+```{r}
+fit1<-auto.arima(energy15,seasonal=FALSE,xreg=fourier(energy15,K=c(2,6,6)))
+summary(fit1)
+```
+
+*R output-2*
+
+R output to show the results of the fitted TBATS model for the training data:
+```{r}
+fit2<-tbats(energy15)
+fit2
+```
+
+*Comparison between BATS model and TBATS model-1*
+
+A comparison between BATS model and TBATS model for forecasting the energy consumption from 2018.July.1st to 2018.July.31st is shown in Figure 3.9. Here, we use a small training sample with data from 2018.Jan.1st. to 2018.June.30th. to save time.
+
+Figure 3.9: Forecast comparison between BATS model and TBATS model 
+```{r}
+#par(mfrow=c(2,1))
+autoplot(for3,include=24*31)+ylab("Energy Consumption")+xlab("Hour")+ggtitle('BATS forecast of energy consumption for 2018')
+autoplot(for4,include=24*31)+ylab("Energy Consumption")+xlab("Hour")+ggtitle('TBATS forecast of energy consumption for 2018')
+```
+
+
+*Comparison between BATS model and TBATS model-2*
+
+A decomposition comparison between BATS model and TBATS model is shown in Figure 3.10. TBATS model shows clearer patterns among trend and three seasonal patterns.
+
+Figure 3.10: Decomposition comparison between BATS model and TBATS model 
+```{r}
+#decomposition basing on BATS model and TBATS model
+#fit3 for BATS model
+#fit4 for TBATS model
+#par(mfrow=c(1,2))
+plot(fit3)
+plot(fit4)
+```
+
+
+
+
+
