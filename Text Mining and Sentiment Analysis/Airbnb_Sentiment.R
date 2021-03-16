@@ -219,3 +219,4 @@ comparison.cloud(
   max.words =50,
   colors = c("plum1","navyblue")
 )
+dev.off()
