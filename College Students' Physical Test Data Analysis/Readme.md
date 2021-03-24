@@ -1,1 +1,6 @@
-This folder contains two articles related to data analysis on College Students' Physical Test in 2017. 
+This folder contains two articles related to data analysis on College Students' Physical Test in 2017. The data comes from the database of Nanjing University of Post and Telecommunication Sports Center. There are 8891 observations being calculated, since national 
+identification numbers are also provided, to protect privacy, I do not show the original datasets here. 
+
+The first paper is a final version of my undergraduate graduation thesis, it contains descriptive analysis, correlation analysis, evaluation, and prediction systems to explore the physical ability of college students in a secondary college in Nanjing. According to the indicators and weights of each item, as well as refer to the basic physical ability of students, so as to analyze useful conclusions and provide suggestions for improving student performance and to guide school makes contributions to scientific teaching plans.
+
+The second article focuses on the use of gray correlation analysis, combined with the level analysis-entropy method to establish a comprehensive evaluation system for students' physical ability, and provide guidance and suggestions to student groups of different grades, majors, and student origins.
